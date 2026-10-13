@@ -170,7 +170,7 @@ Enlace enviado tras la actividad → `encuesta.php` (4 preguntas, sin registro n
 **Requisitos**
 
 - **PHP 8.4** (versión de producción; el código es compatible desde 8.0) con extensión PDO MySQL y función `mail()` disponible.
-- MySQL 5.7+ / MariaDB 10.3+ con soporte InnoDB (obligatorio: el control de aforo usa transacciones y bloqueo de filas).
+- MySQL 5.7+ / MariaDB 10.3+ con soporte InnoDB (obligatorio: el control de aforo usa transacciones y bloqueo de filas). **Producción usa MySQL y el entorno de calidad MariaDB**, así que el esquema se mantiene en el subconjunto común a ambos: sin índices parciales y sin sintaxis propia de uno de los dos.
 - Acceso FTP o gestor de archivos, y posibilidad de programar una tarea cron. Cualquier hosting compartido estándar cumple.
 - Sin Composer, sin npm, sin paso de build: no hay dependencias que instalar.
 
@@ -334,7 +334,7 @@ flowchart TD
 | **`estilos.php`** | CSS con variables + Matomo | Sistema visual único (paleta, tipografías, componentes) y etiqueta de analítica sin cookies. Se incluye en todas las páginas. |
 | **`config.php`** | Constantes PHP | Secretos y reglas de negocio parametrizadas. Excluido de git. Único archivo que edita quien instala. |
 | **`cron-recordatorios.php`** | PHP CLI / HTTP con token | Envía recordatorios de evento de forma idempotente, marcando `recordatorio_enviado`. |
-| **Base de datos** | MySQL/MariaDB InnoDB `utf8mb4_unicode_ci` | Siete tablas. InnoDB es requisito, no preferencia: el control de aforo depende de transacciones y bloqueo de filas. |
+| **Base de datos** | InnoDB `utf8mb4_unicode_ci` · MySQL en producción, MariaDB en calidad | Siete tablas. InnoDB es requisito, no preferencia: el control de aforo depende de transacciones y bloqueo de filas. El esquema se ciñe al subconjunto común a los dos motores. |
 
 ### **2.3. Descripción de alto nivel del proyecto y estructura de ficheros**
 
@@ -397,13 +397,13 @@ Dos carpetas merecen atención porque no son habituales en un proyecto PHP:
 
 ```mermaid
 flowchart LR
-    DEV["Entorno local<br/>PHP built-in server<br/>MySQL local"]
+    DEV["Entorno de calidad<br/>subdominio de pruebas<br/>MariaDB · config propio"]
     GIT[("GitHub<br/>repo privado")]
     FTP{{"Cliente FTP<br/>checklist deploy-ftp"}}
 
     subgraph HOST["Hosting compartido · almasilvestre.es"]
         WEB["Apache/Nginx + PHP 8.4<br/>public_html · HTTPS Let's Encrypt"]
-        MY[("MySQL/MariaDB")]
+        MY[("MySQL · InnoDB")]
         MAT["Matomo autoalojado<br/>/analiticas/"]
         CR["Cron diario"]
         MX["Correo del hosting<br/>SPF + DKIM"]
@@ -418,11 +418,11 @@ flowchart LR
     CR -->|cron-recordatorios.php| WEB
 ```
 
-**Infraestructura.** Un único hosting compartido (plan básico) sirviendo el dominio `almasilvestre.es` con **PHP 8.4**, una base de datos MySQL/MariaDB, una instancia de **Matomo autoalojada en el mismo dominio** (`/analiticas/`), correo del propio hosting con SPF y DKIM configurados para el remitente `reservas@almasilvestre.es`, HTTPS por Let's Encrypt y una tarea cron diaria. Sin contenedores, sin balanceador, sin CDN propia. El coste total de operación es el de un plan de hosting compartido, que es lo que el negocio puede sostener.
+**Infraestructura.** Un único hosting compartido (plan básico) sirviendo el dominio `almasilvestre.es` con **PHP 8.4**, una base de datos **MySQL** (el entorno de calidad, en un subdominio del mismo hosting, corre sobre MariaDB), una instancia de **Matomo autoalojada en el mismo dominio** (`/analiticas/`), correo del propio hosting con SPF y DKIM configurados para el remitente `reservas@almasilvestre.es`, HTTPS por Let's Encrypt y una tarea cron diaria. Sin contenedores, sin balanceador, sin CDN propia. El coste total de operación es el de un plan de hosting compartido, que es lo que el negocio puede sostener.
 
 **Proceso de despliegue.**
 
-1. Desarrollo y prueba previa en un subdominio del hosting, con base de datos y `config.php` propios. (En un entorno con PHP CLI este paso sería `php -S localhost:8000` + MySQL local; el de este proyecto no lo tiene, ver 2.6.)
+1. Desarrollo y prueba previa en el **entorno de calidad**: un subdominio del hosting con MariaDB y `config.php` propios. (En un entorno con PHP CLI este paso sería `php -S localhost:8000` contra una base de datos local; el de este proyecto no lo tiene, ver 2.6.)
 2. Commit y push al repositorio privado.
 3. Auditoría previa con la skill `seguridad-php` (sustituye al linter: el entorno de desarrollo no tiene PHP CLI).
 4. Checklist guiado de la skill `deploy-ftp`: verificar que `config.php` del servidor **no** se sobrescribe con el local, que `uploads/` y `stats/` no se tocan, y qué archivos han cambiado realmente.
@@ -1127,12 +1127,12 @@ Añadir a la tabla `citas` el soporte de autogestión: token, caducidad, estado 
 
 1. Actualizar la definición de `citas` en `db.php` y en `schema.sql`. *(1 h)*
 2. Escribir y probar el `ALTER TABLE` de migración sobre una copia de la base de datos de producción. *(1 h)*
-3. Resolver la reserva de huecos con citas canceladas: decidir entre liberar el hueco mediante un índice único parcial o mediante limpieza controlada al cancelar; documentar la decisión. *(1 h)*
+3. Resolver la reserva de huecos con citas canceladas eligiendo y documentando una alternativa compatible con el motor real (MySQL en producción, MariaDB en calidad): limpieza controlada al cancelar, o una **columna generada** que valga `NULL` cuando la cita está cancelada con el índice único sobre ella —en un índice único los `NULL` no colisionan entre sí—. **No** sirve un índice único parcial con `WHERE`: eso es de PostgreSQL y SQL Server; ni MySQL ni MariaDB lo admiten. *(1 h)*
 4. Verificar con datos reales copiados: aforo, generación de huecos y exportaciones CSV siguen correctos tras la migración. *(1 h)*
 
 **Riesgo identificado y mitigación**
 
-La clave única `(servicio_id, fecha_hora)` impide insertar una cita nueva en un hueco cuya cita anterior figure como `cancelada` en la misma tabla. Es el punto técnico central del ticket: se resuelve en la tarea 3 antes de escribir el código de backend, y por eso este ticket **precede** al Ticket 1.
+La clave única `(servicio_id, fecha_hora)` impide insertar una cita nueva en un hueco cuya cita anterior figure como `cancelada` en la misma tabla. Es el punto técnico central del ticket: se resuelve en la tarea 3 antes de escribir el código de backend, y por eso este ticket **precede** al Ticket 1. La solución está además acotada por el motor: al no haber índices parciales en MySQL ni en MariaDB, la elección real es entre la limpieza al cancelar y la columna generada.
 
 ---
 
