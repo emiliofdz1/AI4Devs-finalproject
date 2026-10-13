@@ -92,7 +92,7 @@
 
 > "Lo primero que vamos a hacer es crear un spec de entrega de documentación siguiendo estas recomendaciones. Es la primera parte, solo documentación, aunque nosotros ya tenemos más cosas. […] https://github.com/LIDR-academy/AI4Devs-finalproject esa sería la url final"
 
-*Resultado:* change OpenSpec `add-entrega-1-documentacion` (propuesta, diseño, spec con 11 requisitos y 36 tareas) antes de escribir una línea del `readme.md`. Se aplicó al propio entregable el método que el proyecto usa para el código: especificar antes de producir.
+*Resultado:* change OpenSpec `add-entrega-1-documentacion` (propuesta, diseño, spec con 12 requisitos y 42 tareas) antes de escribir una línea del `readme.md`. Se aplicó al propio entregable el método que el proyecto usa para el código: especificar antes de producir.
 
 ---
 
