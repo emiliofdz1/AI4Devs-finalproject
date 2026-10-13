@@ -128,18 +128,19 @@ Capturas tomadas de https://almasilvestre.es (páginas públicas, sin datos de c
 
 **Recorrido 1 — Reservar una sesión individual (flujo principal end-to-end)**
 
-```
+```text
 index.php            Landing de marca → CTA "Reservar sesión"
    ↓
 servicios.php        Catálogo de servicios activos (duración, precio, señal)
    ↓
 reservar-cita.php    Huecos libres agrupados por día · selección de hora
    ↓ (POST)          Datos + consentimiento · validación + anti-CSRF
-gracias-cita.php     Instrucciones de Bizum · estado de la reserva por sesión PHP
+gracias-cita.php     Estado de la reserva por sesión PHP · Bizum solo si hay señal
    ↓
-Email               Cliente: cita pendiente con instrucciones · Negocio: aviso interno
+Email               Cliente: estado de su cita · Negocio: aviso interno
    ↓
-admin-citas.php     El negocio marca el Bizum recibido → cita confirmada + email
+admin-citas.php     Con señal: el negocio marca el Bizum recibido → confirmada + email
+                    Sin señal: la cita ya nació confirmada; se cobra en la sesión
 ```
 
 **Recorrido 2 — Inscribirse a una experiencia grupal**
@@ -232,7 +233,7 @@ Enlace enviado tras la actividad → `encuesta.php` (4 preguntas, sin registro n
    const MATOMO_SITE_ID = '1';
    ```
 
-4. **Subir los archivos** a `public_html` (o `www`) del hosting, por FTP o por el gestor de archivos del panel, respetando la raíz del proyecto. En local basta con `php -S localhost:8000`.
+4. **Subir los archivos** a `public_html` (o `www`) del hosting, por FTP o por el gestor de archivos del panel, respetando la raíz del proyecto. Para probar en local, **si se dispone de PHP CLI**, basta con `php -S localhost:8000`; el entorno de desarrollo de este proyecto no lo tiene (ver 2.6), así que la prueba previa se hace en un subdominio del propio hosting con su base de datos y su `config.php` separados.
 
 5. **Primer arranque:** abrir cualquier página. `db.php` crea las siete tablas automáticamente (`CREATE TABLE IF NOT EXISTS`). No hay migraciones que ejecutar. `schema.sql` queda como referencia y documenta los `ALTER TABLE` necesarios para instalaciones anteriores.
 
@@ -337,7 +338,7 @@ flowchart TD
 
 ### **2.3. Descripción de alto nivel del proyecto y estructura de ficheros**
 
-```
+```text
 alma-silvestre/
 ├── index.php                  Landing de marca (testimonios, estadísticas, FAQ, CTA)
 │
@@ -421,7 +422,7 @@ flowchart LR
 
 **Proceso de despliegue.**
 
-1. Desarrollo y prueba en local (`php -S localhost:8000` + MySQL local).
+1. Desarrollo y prueba previa en un subdominio del hosting, con base de datos y `config.php` propios. (En un entorno con PHP CLI este paso sería `php -S localhost:8000` + MySQL local; el de este proyecto no lo tiene, ver 2.6.)
 2. Commit y push al repositorio privado.
 3. Auditoría previa con la skill `seguridad-php` (sustituye al linter: el entorno de desarrollo no tiene PHP CLI).
 4. Checklist guiado de la skill `deploy-ftp`: verificar que `config.php` del servidor **no** se sobrescribe con el local, que `uploads/` y `stats/` no se tocan, y qué archivos han cambiado realmente.
@@ -469,7 +470,7 @@ flowchart LR
 | Nivel | Alcance previsto |
 |---|---|
 | **Unitarios** | Funciones puras de `lib.php`: `tel_normalizar`, `mensaje_escasez`, `precio_fmt`, generación de huecos a partir del horario recurrente (días, bloques, intervalo, bloqueos). |
-| **Integración** | `crear_inscripcion` y `crear_cita` contra una base de datos de prueba: estados `pendiente`/`espera`, cálculo de importe y depósito, colisión en la clave única, rollback ante error. |
+| **Integración** | `crear_inscripcion` y `crear_cita` contra una base de datos de prueba: estados `pendiente`/`espera`/`confirmada` según aforo y señal, cálculo de importe y depósito, colisión en la clave única, rollback ante error. |
 | **End-to-end** | Flujo principal completo: catálogo → selección de hueco → reserva → pantalla de gracias → registro en base de datos, incluida la verificación del token CSRF. |
 
 ---
@@ -686,7 +687,7 @@ Los huecos **no se almacenan**: se calculan al vuelo a partir de esta regla, res
 | — | — | **UNIQUE** `uq_cita (servicio_id, fecha_hora)` | **Garantía de capacidad 1 por hueco.** Es la defensa real frente a la doble reserva en concurrencia: el segundo `INSERT` falla con el código `23000` y la aplicación lo traduce a "ese hueco acaba de reservarse" |
 | `nombre` / `email` / `telefono` | `VARCHAR` | `NOT NULL` | Datos personales |
 | `importe` / `deposito` | `DECIMAL(8,2)` | `DEFAULT 0` | Copiados del servicio al reservar, para que un cambio de tarifa no altere reservas pasadas |
-| `estado` | `ENUM` | `pendiente` \| `confirmada`, `DEFAULT 'pendiente'`, índice | Sin `espera`: una cita 1:1 no tiene lista de espera (propuesta pendiente) |
+| `estado` | `ENUM` | `pendiente` \| `confirmada`, `DEFAULT 'pendiente'`, índice | Nace `confirmada` si el servicio no lleva señal. Sin `espera`: una cita 1:1 no tiene lista de espera (propuesta pendiente) |
 | `bizum_recibido` | `TINYINT(1)` | `DEFAULT 0` | Confirmación manual del pago |
 | `atendida` | `TINYINT(1)` | `DEFAULT 0` | Asistencia real |
 | `consentimiento_marketing` | `TINYINT(1)` | `DEFAULT 0` | Filtro RGPD |
@@ -793,9 +794,12 @@ paths:
       description: >
         Crea una inscripción decidiendo su estado según el aforo, dentro de una
         transacción con bloqueo de filas (SELECT … FOR UPDATE) para impedir la
-        sobreventa de la última plaza. Si las plazas solicitadas no caben en el
-        aforo disponible, la inscripción se crea en estado `espera` (lista de
-        espera) en lugar de rechazarse. Tras crearla se envía el correo
+        sobreventa de la última plaza. Regla de aforo: si el evento tiene plazas
+        libres pero menos de las pedidas, la solicitud se rechaza indicando
+        cuántas quedan; solo cuando el evento está completo se acepta y la
+        inscripción se crea en estado `espera` (lista de espera). En la carrera
+        por la última plaza es el bloqueo de filas el que decide: la solicitud
+        que llega segunda pasa a `espera`. Tras crearla se envía el correo
         correspondiente; un fallo de envío no invalida la inscripción.
       parameters:
         - name: evento_id
@@ -820,8 +824,10 @@ paths:
                   type: integer
                   minimum: 1
                   description: >
-                    No puede superar las plazas disponibles salvo que el aforo
-                    esté completo, en cuyo caso la solicitud va a lista de espera.
+                    Máximo 10 por solicitud. Si el evento tiene plazas libres pero
+                    menos de las pedidas, el formulario se rechaza indicando
+                    cuántas quedan. Solo cuando el evento está completo la
+                    solicitud se acepta y pasa a lista de espera.
                 consentimiento_marketing:
                   type: string
                   enum: ["Sí"]
@@ -836,19 +842,21 @@ paths:
       responses:
         "302":
           description: >
-            Inscripción creada. Redirige a `gracias-reserva.php`, que muestra las
-            instrucciones de pago o el aviso de lista de espera leyendo el
-            identificador desde la sesión.
+            Dos destinos posibles. Si la inscripción se crea, redirige a
+            `gracias-reserva.php`, que muestra las instrucciones de pago o el
+            aviso de lista de espera leyendo el identificador desde la sesión.
+            Si el evento no existe o no está publicado, redirige a `eventos.php`.
           headers:
             Location:
-              schema: { type: string, example: "gracias-reserva.php" }
+              schema:
+                type: string
+                enum: ["gracias-reserva.php", "eventos.php"]
         "200":
           description: >
             Formulario devuelto con mensaje de error. Causas: token CSRF caducado,
-            datos obligatorios incompletos, email inválido, plazas solicitadas
-            mayores que las disponibles, o fallo al registrar la reserva.
-        "302 (evento no válido)":
-          description: Redirección a `eventos.php` si el evento no existe o no está publicado.
+            límite de envíos por IP superado, datos obligatorios incompletos,
+            email inválido, plazas solicitadas mayores que las disponibles en un
+            evento que no está completo, o fallo al registrar la reserva.
 
   /reservar-cita.php:
     post:
@@ -859,7 +867,9 @@ paths:
         (CITAS_DIAS_VISIBLES). La capacidad de una persona por hueco la garantiza
         una clave única (servicio_id, fecha_hora) en base de datos: ante una
         colisión de concurrencia, el segundo intento recibe el mensaje de hueco
-        ocupado y no se crea una doble reserva.
+        ocupado y no se crea una doble reserva. El estado inicial lo decide la
+        señal del servicio: `pendiente` si la lleva (queda a la espera del Bizum)
+        o `confirmada` si no, porque no hay nada que cobrar por adelantado.
       parameters:
         - name: servicio_id
           in: query
@@ -896,20 +906,24 @@ paths:
       responses:
         "302":
           description: >
-            Cita creada en estado `pendiente`. Redirige a `gracias-cita.php` con
-            las instrucciones de Bizum. Se envían dos correos: instrucciones al
-            cliente y aviso interno al negocio.
+            Dos destinos posibles. Si la cita se crea, redirige a `gracias-cita.php`
+            con el estado de la reserva. La cita nace en `pendiente` si el servicio
+            lleva señal (y la pantalla muestra las instrucciones de Bizum) o en
+            `confirmada` si no la lleva, en cuyo caso el importe se abona el día de
+            la sesión. En ambos casos se envían dos correos: uno al cliente con el
+            estado de su cita y un aviso interno al negocio.
+            Si el servicio no existe o no está activo, redirige a `servicios.php`.
           headers:
             Location:
-              schema: { type: string, example: "gracias-cita.php" }
+              schema:
+                type: string
+                enum: ["gracias-cita.php", "servicios.php"]
         "200":
           description: >
             Formulario devuelto con mensaje de error. Causas: token CSRF caducado,
             datos incompletos o email inválido, hueco no elegido, o
             "ese hueco acaba de reservarse" cuando el hueco ya no está libre,
             queda fuera de la ventana pública o no pertenece al horario del servicio.
-        "302 (servicio no válido)":
-          description: Redirección a `servicios.php` si el servicio no existe o no está activo.
 ```
 
 ---
@@ -929,7 +943,8 @@ paths:
 **Criterios de aceptación**
 
 - **Dado** un servicio activo con horario recurrente configurado, **cuando** abro su página de reserva, **entonces** veo únicamente los huecos libres de los próximos días de la ventana pública, agrupados por día y con la hora visible.
-- **Dado** que elijo un hueco y relleno nombre, email y teléfono válidos, **cuando** envío el formulario, **entonces** la cita se crea en estado `pendiente` y llego a una pantalla de confirmación con las instrucciones de pago de la señal.
+- **Dado** un servicio **con señal** (`deposito > 0`), **cuando** elijo un hueco y relleno nombre, email y teléfono válidos, **entonces** la cita se crea en estado `pendiente` y llego a una pantalla de confirmación con las instrucciones de pago de la señal.
+- **Dado** un servicio **sin señal** (`deposito = 0`), **cuando** envío el mismo formulario, **entonces** la cita se crea ya en estado `confirmada`, no se pide Bizum y se informa de que el importe se abona el día de la sesión.
 - **Dado** que dos personas eligen el mismo hueco a la vez, **cuando** ambas envían el formulario, **entonces** solo se crea una cita y la segunda recibe el mensaje "ese hueco acaba de reservarse" sin perder los datos introducidos.
 - **Dado** que un hueco está bloqueado manualmente por el negocio o queda fuera de la ventana pública, **cuando** intento reservarlo, **entonces** la reserva se rechaza aunque la petición se manipule fuera del formulario.
 - **Dado** que la reserva se ha creado, **cuando** el sistema envía los correos, **entonces** recibo las instrucciones de Bizum y el negocio recibe un aviso interno; **y** si el envío de correo falla, mi reserva sigue guardada.
@@ -1039,6 +1054,7 @@ Implementar la lógica que permite a un cliente cancelar o reprogramar su cita 1
 - El token se valida en **tiempo constante** (`hash_equals`) contra el almacenado; un token inválido, caducado o de otra reserva devuelve un error genérico **sin revelar** si la reserva existe.
 - Cancelar una cita `pendiente` o `confirmada` la marca como `cancelada` y el hueco vuelve a aparecer entre los disponibles en la siguiente consulta.
 - Reprogramar valida el nuevo hueco con las mismas reglas que una reserva nueva (pertenece al horario, está libre, dentro de la ventana pública) y respeta la clave única: si el nuevo hueco se ocupa entre medias, la cita original **no se pierde**.
+- Al reprogramar se actualiza `token_caduca` a la fecha de la **nueva** sesión, en la misma transacción que el cambio de hueco. Sin esto, mover una cita a una fecha posterior dejaría el enlace caducado mientras la cita sigue viva, y el cliente no podría volver a cancelarla.
 - Cancelar dos veces con el mismo enlace es idempotente: la segunda vez informa de que ya está cancelada, sin efectos adicionales.
 - No se puede cancelar ni reprogramar una cita cuya fecha ya ha pasado.
 - Toda operación deja registro de la fecha de cancelación para poder auditar.
@@ -1046,7 +1062,7 @@ Implementar la lógica que permite a un cliente cancelar o reprogramar su cita 1
 **Tareas técnicas**
 
 1. `lib.php`: `generar_token_gestion(int $cita_id): string` y `cita_por_token(string $token): ?array` con validación en tiempo constante y de caducidad. *(2 h)*
-2. `lib.php`: `cancelar_cita(int $id): bool` y `reprogramar_cita(int $id, string $nueva_fecha_hora): array`, reutilizando la validación de huecos existente y devolviendo el motivo del fallo. *(3 h)*
+2. `lib.php`: `cancelar_cita(int $id): bool` y `reprogramar_cita(int $id, string $nueva_fecha_hora): array`, reutilizando la validación de huecos existente y devolviendo el motivo del fallo. `reprogramar_cita` actualiza `token_caduca` a la nueva fecha en el mismo `UPDATE` que `fecha_hora`, para que el enlace siga sirviendo. *(3 h)*
 3. `emails.php`: incluir el enlace de autogestión en el correo de cita pendiente y en el de confirmada; nueva plantilla de cancelación confirmada. *(2 h)*
 4. Extender la generación de huecos para que ignore las citas en estado `cancelada`. *(1 h)*
 
