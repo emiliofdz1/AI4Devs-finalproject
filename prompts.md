@@ -36,7 +36,7 @@
 |---|---|
 | `marca` | Crea y audita páginas PHP para que sigan el sistema visual exacto (paleta, tipografías, constantes de `config.php`, textos RGPD). Fuente de verdad visual: `index.php`. |
 | `db-tabla` | Añade una tabla nueva siguiendo el patrón del proyecto: `CREATE TABLE IF NOT EXISTS` en `db.php` + helpers con sentencias preparadas en `lib.php` + reflejo en `schema.sql`, los tres coherentes. |
-| `seguridad-php` | Audita las páginas buscando SQL sin preparar, salida sin escapar, formularios sin CSRF, fallos de indexación y filtraciones RGPD. **Sustituye al linter**, que no se puede ejecutar porque el entorno de desarrollo no tiene PHP CLI. |
+| `seguridad-php` | Audita las páginas buscando SQL sin preparar, salida sin escapar, formularios sin CSRF, fallos de indexación y filtraciones RGPD. Nació para suplir la ausencia de linter cuando el entorno no tenía PHP CLI; hoy, con la suite ya en marcha, sigue usándose porque cubre lo que ninguna prueba automática detecta. |
 | `deploy-ftp` | Checklist guiado de subida a hosting compartido sin sobrescribir `config.php` del servidor ni filtrar secretos. |
 
 **Flujo OpenSpec** — skills `openspec-propose`, `openspec-explore`, `openspec-apply-change`, `openspec-archive-change`, `openspec-sync-specs` y comandos slash equivalentes (`/opsx:propose`, `/opsx:apply`, `/opsx:archive`, …).
@@ -92,7 +92,7 @@
 
 > "Lo primero que vamos a hacer es crear un spec de entrega de documentación siguiendo estas recomendaciones. Es la primera parte, solo documentación, aunque nosotros ya tenemos más cosas. […] https://github.com/LIDR-academy/AI4Devs-finalproject esa sería la url final"
 
-*Resultado:* change OpenSpec `add-entrega-1-documentacion` (propuesta, diseño, spec con 12 requisitos y 42 tareas) antes de escribir una línea del `readme.md`. Se aplicó al propio entregable el método que el proyecto usa para el código: especificar antes de producir.
+*Resultado:* change OpenSpec `add-entrega-1-documentacion` (propuesta, diseño y spec con 12 requisitos, y un plan de 42 tareas que creció hasta 57 al incorporar las rondas de revisión del PR y el cierre de la suite de pruebas) antes de escribir una línea del `readme.md`. Se aplicó al propio entregable el método que el proyecto usa para el código: especificar antes de producir.
 
 ---
 
@@ -138,7 +138,7 @@
 
 > "Revisa la seguridad antes de subir."
 
-*Ejecución:* dispara la skill `seguridad-php`. Es el prompt más repetido del proyecto: se ejecuta antes de cada despliegue y sustituye al linter ausente.
+*Ejecución:* dispara la skill `seguridad-php`. Es el prompt más repetido del proyecto: se ejecuta antes de cada despliegue, y se mantiene incluso con la suite de pruebas ya en marcha porque busca cosas distintas.
 
 **Prompt 2** *(Opus 5 — esta entrega)*
 
@@ -153,6 +153,8 @@
 > "Declara el estado real de los tests. Si no hay suite automatizada, dilo, y explica qué se verifica a mano y qué se planifica para la entrega final."
 
 *Ajuste humano:* decisión explícita de **no** maquillar la ausencia de tests. Es la sección donde la tentación de inventar era mayor.
+
+*Continuación:* declarada la carencia, se cerró. La limitación de fondo no era el tiempo sino la falta de PHP CLI, y se resolvió con herramientas portables (PHP, MariaDB y PHPUnit en `tools/`, sin instalar nada en el sistema). La sección 2.6 recoge hoy 332 pruebas y mantiene el mismo criterio: declarar también lo que sigue sin cubrirse (integración continua, cobertura, contenido de los correos).
 
 ---
 

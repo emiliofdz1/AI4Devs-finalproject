@@ -233,7 +233,7 @@ Enlace enviado tras la actividad → `encuesta.php` (4 preguntas, sin registro n
    const MATOMO_SITE_ID = '1';
    ```
 
-4. **Subir los archivos** a `public_html` (o `www`) del hosting, por FTP o por el gestor de archivos del panel, respetando la raíz del proyecto. Para probar en local, **si se dispone de PHP CLI**, basta con `php -S localhost:8000`; el entorno de desarrollo de este proyecto no lo tiene (ver 2.6), así que la prueba previa se hace en un subdominio del propio hosting con su base de datos y su `config.php` separados.
+4. **Subir los archivos** a `public_html` (o `www`) del hosting, por FTP o por el gestor de archivos del panel, respetando la raíz del proyecto. Para probar antes de publicar hay dos vías: el servidor integrado de PHP (`php -S localhost:8000`, usando el PHP portable que instala `tests/instalar-herramientas.sh` si el sistema no lo trae), o un subdominio del propio hosting con su base de datos y su `config.php` separados.
 
 5. **Primer arranque:** abrir cualquier página. `db.php` crea las siete tablas automáticamente (`CREATE TABLE IF NOT EXISTS`). No hay migraciones que ejecutar. `schema.sql` queda como referencia y documenta los `ALTER TABLE` necesarios para instalaciones anteriores.
 
@@ -397,7 +397,7 @@ Dos carpetas merecen atención porque no son habituales en un proyecto PHP:
 
 ```mermaid
 flowchart LR
-    DEV["Entorno de calidad<br/>subdominio de pruebas<br/>MariaDB · config propio"]
+    DEV["Entorno de calidad<br/>PHP y MariaDB portables<br/>332 pruebas · config propio"]
     GIT[("GitHub<br/>repo privado")]
     FTP{{"Cliente FTP<br/>checklist deploy-ftp"}}
 
@@ -422,9 +422,9 @@ flowchart LR
 
 **Proceso de despliegue.**
 
-1. Desarrollo y prueba previa en el **entorno de calidad**: un subdominio del hosting con MariaDB y `config.php` propios. (En un entorno con PHP CLI este paso sería `php -S localhost:8000` contra una base de datos local; el de este proyecto no lo tiene, ver 2.6.)
+1. Desarrollo y pruebas en el **entorno de calidad**: suite automatizada en local sobre PHP y MariaDB portables (`tests/preparar.sh`), y verificación de los flujos en un subdominio del hosting con su base de datos y su `config.php` propios.
 2. Commit y push al repositorio privado.
-3. Auditoría previa con la skill `seguridad-php` (sustituye al linter: el entorno de desarrollo no tiene PHP CLI).
+3. Suite de pruebas en verde y auditoría previa con la skill `seguridad-php`, que revisa consultas sin preparar, salida sin escapar y control de acceso: cubre lo que ninguna prueba automática detecta por sí sola.
 4. Checklist guiado de la skill `deploy-ftp`: verificar que `config.php` del servidor **no** se sobrescribe con el local, que `uploads/` y `stats/` no se tocan, y qué archivos han cambiado realmente.
 5. Subida por FTP de los archivos modificados a `public_html`.
 6. Verificación en producción: página pública, un formulario, acceso al panel.
@@ -452,11 +452,20 @@ flowchart LR
 
 ### **2.6. Tests**
 
-**Estado real en la Entrega 1: no existe suite de tests automatizados.** Se declara explícitamente en lugar de presentar un plan como si estuviera ejecutado. El entorno de desarrollo no dispone de PHP CLI local, lo que impide ejecutar PHPUnit en la máquina de trabajo; resolver esa limitación forma parte del alcance de la Entrega 3.
+**Cuando se redactó esta entrega no existía suite automatizada**, y así se declaró en lugar de presentar un plan como si estuviera ejecutado: el entorno de desarrollo no tenía PHP CLI y eso impedía ejecutar PHPUnit. **Esa limitación ya está resuelta** y la suite existe, antes de lo previsto. Se deja constancia de ambos estados porque el camino —declarar la carencia y después cerrarla— es parte de lo que documenta esta memoria.
 
-**Qué sí se verifica hoy, y cómo:**
+**Estado actual: 332 pruebas y 1.566 aserciones, en verde.**
 
-1. **Auditoría estática asistida** — la skill `seguridad-php` recorre las páginas buscando consultas sin preparar, salida sin escapar, formularios sin token CSRF, fallos de control de indexación y filtraciones de datos personales. Sustituye funcionalmente al linter ausente y se ejecuta antes de cada despliegue.
+| Nivel | Qué cubre | Dónde |
+|---|---|---|
+| **Unitarias e integración** (PHPUnit 11.5) | 27 ficheros sobre `lib.php` y `emails.php`, agrupados por módulo: citas y huecos, encuestas, eventos e inscripciones, y fichas de cliente (cifrado, PIN, TOTP, control de acceso). Se ejecutan contra una base de datos MariaDB de pruebas, no contra la real. | `tests/Unit/` |
+| **End-to-end** (Playwright) | 12 specs que recorren la web como un usuario: reserva 1:1, inscripción grupal, encuesta, panel, acceso a fichas y modo tablet. | `tests/e2e/specs/` |
+
+La limitación se resolvió con **herramientas portables**: `tests/instalar-herramientas.sh` descarga PHP 8.3, MariaDB 11.4 y PHPUnit en `tools/` (sin instalación en el sistema ni permisos de administrador), y `tests/preparar.sh` levanta la base de datos y **copia la aplicación a una carpeta aparte** con un `config.php` de valores ficticios, de modo que ninguna prueba toque el código ni los datos reales.
+
+**Qué se verifica además, y cómo:**
+
+1. **Auditoría estática asistida** — la skill `seguridad-php` recorre las páginas buscando consultas sin preparar, salida sin escapar, formularios sin token CSRF, fallos de control de indexación y filtraciones de datos personales. Se ejecuta antes de cada despliegue: cubre lo que las pruebas no ven, porque una página puede pasar todos los tests y aun así exponer datos.
 2. **Pruebas manuales de los flujos críticos**, ejecutadas sobre el checklist de despliegue:
    - Encuesta: envío válido, email inválido, puntuación fuera de rango (1-10), token CSRF caducado.
    - Inscripción: aforo con plazas, **última plaza**, aforo completo → lista de espera, número de plazas mayor que el disponible.
@@ -465,13 +474,15 @@ flowchart LR
    - Cron: doble ejecución el mismo día → no duplica recordatorios (idempotencia verificada sobre `recordatorio_enviado`).
 3. **Verificación de concurrencia** — dos reservas simultáneas sobre el mismo hueco 1:1: la segunda recibe "ese hueco acaba de reservarse" y no se crea una doble cita (garantía de la clave única, no del código de aplicación).
 
-**Plan para la Entrega 3**
+**Lo que estaba previsto para la Entrega 3, y su estado**
 
-| Nivel | Alcance previsto |
-|---|---|
-| **Unitarios** | Funciones puras de `lib.php`: `tel_normalizar`, `mensaje_escasez`, `precio_fmt`, generación de huecos a partir del horario recurrente (días, bloques, intervalo, bloqueos). |
-| **Integración** | `crear_inscripcion` y `crear_cita` contra una base de datos de prueba: estados `pendiente`/`espera`/`confirmada` según aforo y señal, cálculo de importe y depósito, colisión en la clave única, rollback ante error. |
-| **End-to-end** | Flujo principal completo: catálogo → selección de hueco → reserva → pantalla de gracias → registro en base de datos, incluida la verificación del token CSRF. |
+| Nivel | Alcance previsto | Estado |
+|---|---|---|
+| **Unitarios** | Funciones puras de `lib.php`: `tel_normalizar`, `mensaje_escasez`, `precio_fmt`, generación de huecos a partir del horario recurrente (días, bloques, intervalo, bloqueos). | ✅ Cubierto |
+| **Integración** | `crear_inscripcion` y `crear_cita` contra una base de datos de prueba: estados `pendiente`/`espera`/`confirmada` según aforo y señal, cálculo de importe y depósito, colisión en la clave única, rollback ante error. | ✅ Cubierto |
+| **End-to-end** | Flujo principal completo: catálogo → selección de hueco → reserva → pantalla de gracias → registro en base de datos, incluida la verificación del token CSRF. | ✅ Cubierto |
+
+**Lo que sigue sin cubrir**, declarado igual que antes se declaró la ausencia de suite: no hay integración continua —las pruebas se lanzan a mano antes de desplegar, no al hacer push—, no se mide cobertura, y `mail()` no envía en el entorno de pruebas, así que se verifica que la reserva sobrevive a un fallo de correo pero no el contenido del correo recibido.
 
 ---
 
